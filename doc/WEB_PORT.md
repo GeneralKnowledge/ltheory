@@ -1,15 +1,52 @@
 # Web Port Plan
 
-**Goal:** Run a flyable space scene in the browser — skybox, nebula, starfield,
-planets, and a player ship under keyboard/mouse control. No NPCs, trading,
-economy, missions, or combat.
+**Goal:** The same beautiful free-flight experience as desktop Limit Theory
+Redux, in the browser — procedural nebula/skybox, starfield, lit planets with
+atmospheres, fighter under full camera/flight controls, and the full space
+post stack. No NPCs, trading, economy, missions, or combat.
+
+**What “slice” means here:** cut *game systems*, not *look or feel*. The web
+build must not be a basic facsimile (simplified materials, missing post,
+static placeholder sky, stub ship). Side-by-side with desktop
+`SolarSystemPlayable` / main-game free flight, it should read as the same
+game.
 
 **Stack (chosen):** Rust → `wasm32-unknown-unknown` + **wgpu (WebGPU)** +
 WASM-safe Lua (PUC-Rio via `mlua`, not LuaJIT) + asset pack / VFS.
 
-**Desktop reference target:** `SolarSystemPlayable`
-(`script/States/App/Tests/SolarSystemPlayable.lua`), trimmed of stations, maps,
-HUD, autopilot, gravity wells, and asteroid streaming.
+**Desktop reference:** `SolarSystemPlayable`
+(`script/States/App/Tests/SolarSystemPlayable.lua`) and the main game’s
+in-flight look (`Config.render.postFx` Space grade). Web may drop stations,
+maps, and HUD chrome; it must keep the visual and piloting pipeline.
+
+---
+
+## Fidelity bar (non-negotiable for v1)
+
+Web v1 is accepted only when these match desktop quality for the same seed
+(screenshot / A–B compare, not “roughly similar”):
+
+| Pillar | Must include |
+|--------|----------------|
+| Background | Live nebula generation (or offline bake that is **indistinguishable** from desktop gen for the fixed seed), skybox, starfield |
+| Celestials | Star, planets, moons, rings as materialized today — `planet` / `atmosphere` / `star` / `moon` / `planetring` materials, celestial lighting + IBL from env maps |
+| Ship | Procedural fighter + metal/PBR materials; thruster visuals if desktop shows them in this mode |
+| PostFX | Full Space stack from `script/Config/Render/PostFxConfig.lua`: bloom, Illustris tonemap, Space colorgrade, vignette, FXAA, sharpen, aberration, dither |
+| Lens flare | `LensFlareSystem` with occlusion — not optional |
+| Flight feel | Same bindings and tuning (`ShipActions`, `ShipFlightSystem`, chase/FPS/orbit/free cameras, boost, roll) |
+| Lighting | Deferred path used by `RenderCoreSystem` + `CelestialLightingSystem` |
+
+**Allowed to drop (systems / chrome only):** stations, system map 2D/3D,
+autopilot, gravity wells, asteroid field streaming, gameplay HUD / world
+labels, menus, economy/NPC/combat, gamepad, save/load, multiplayer.
+
+**Not allowed as “ship later” for v1:** stripping post to bloom+tonemap only,
+skipping atmospheres, grey unlit ship, flat color sky, orbit-cam-only demo,
+or a one-planet toy scene that does not use the real visualizer path.
+
+**Quality presets:** a “low” preset may exist for weak GPUs (lower res,
+cheaper bloom radius), but **default web** targets the desktop Space look.
+Presets scale cost; they do not delete pillars above.
 
 ---
 
@@ -18,8 +55,8 @@ HUD, autopilot, gravity wells, and asteroid streaming.
 | Current desktop stack | Web reality |
 |----------------------|-------------|
 | LuaJIT + LuaJIT FFI (`ffi.C`, `ffi.cast`, `jit`) | LuaJIT has no WASM target; FFI ABI is non-portable |
-| OpenGL 3.3 Core + GLSL `#version 330` via glutin | Need WebGPU (wgpu) or WebGL2; GLSL 330 does not run as-is |
-| Dedicated render OS thread + worker threads | Browser: prefer single-threaded `immediate` loop; workers only via message passing |
+| OpenGL 3.3 Core + GLSL `#version 330` via glutin | Need WebGPU (wgpu); GLSL 330 does not run as-is |
+| Dedicated render OS thread + worker threads | Browser: `immediate` loop; workers only via message passing |
 | `std::fs` / `dofile` / `lfs_ffi` for assets & scripts | Pack + fetch + in-memory VFS |
 | `ltr` dynamically links `phx` cdylib | Single wasm module + JS glue |
 
@@ -30,17 +67,23 @@ swap the GL executor for wgpu (`ai/ideas.md` §12, `doc/engine/render-thread.md`
 
 ## Success criteria (v1)
 
-A page loads a canvas and the player can:
+A page loads a canvas and:
 
-1. See a solar system with star, planets, skybox/nebula/starfield, and postFX
-   (bloom / tonemap at minimum).
-2. Pilot a fighter with existing chase/FPS controls (WASD, mouse look, boost).
-3. Cycle cameras (Chase / Orbit / Free) without leaving the scene.
-4. Sustain interactive framerate on a mid-range desktop GPU in Chrome/Firefox
-   with WebGPU enabled.
+1. **Looks like LTR** — for a fixed seed, web frames are visually comparable
+   to desktop `SolarSystemPlayable` (same nebula character, planet lighting,
+   post grade, flare). Review is side-by-side stills + short fly video.
+2. **Flies like LTR** — chase/FPS piloting with existing thrust/strafe/roll/
+   boost/mouse aim; camera cycle (Chase / FirstPerson / Orbit / Free).
+3. **Uses the real pipelines** — `UniverseManager` + `SolarSystemVisualizer`,
+   `RenderCoreSystem` post stack, `LensFlareSystem`, ship generator — not a
+   parallel “web demo” renderer.
+4. **Interactive** on a mid-range desktop GPU in Chrome/Firefox with WebGPU;
+   low preset available without removing fidelity pillars.
 
-Explicitly out of scope for v1: audio polish, gamepad, save/load, multiplayer,
-full main menu, stations, HUD labels, system map, travel drive, NPCs, economy.
+Out of scope for v1 (content/systems only): NPCs, trading, economy, missions,
+combat, full main menu, stations, maps, HUD chrome, gamepad, multiplayer.
+Audio may ship muted initially if it does not change the visual bar; thruster /
+ambience WebAudio is a fast follow, not a substitute for visuals.
 
 ---
 
@@ -73,13 +116,15 @@ flowchart TB
   WASM --> wasmHost
 ```
 
-Reuse as much as possible above the seams:
+Reuse above the seams:
 
-- **Keep:** `RenderCommand` / `Renderer` API, Rapier physics, glam math,
-  ECS Lua game logic for flight + celestial visuals, postFX *concept*.
-- **Replace:** GL executor, LuaJIT FFI binding layer, filesystem resource
-  loader, threaded renderer (force `immediate` on web), native audio/input
-  extras.
+- **Keep:** `RenderCommand` / `Renderer` API, Rapier, glam, ECS Lua for
+  flight + celestial visuals, **entire** `RenderCoreSystem` post path and
+  material/shader set needed for the reference scene.
+- **Replace:** GL executor, LuaJIT FFI bindings, filesystem loader, threaded
+  renderer (`immediate` on web), native-only input/audio hosts.
+
+Do **not** invent a second, simpler web rendering path.
 
 ---
 
@@ -87,142 +132,121 @@ Reuse as much as possible above the seams:
 
 ### Phase 0 — Desktop prep (unblocks web without shipping WASM yet)
 
-Do this on native first so web work is mostly packaging + binding migration.
-
 1. **Seal the render seam**
-   - Ensure all GPU work goes through `RenderCommand` (no leaked `gl::*` above
+   - All GPU work through `RenderCommand` (no `gl::*` above
      `command_executor_gl.rs`).
-   - Keep `immediate` feature green; it becomes the web default
+   - Keep `immediate` green; it is the web default
      (`engine/lib/phx/src/render/thread/`).
-2. **Abstract window/GL creation**
-   - Split `window/glutin_render.rs` behind a `GraphicsBackend` trait:
-     `GlutinGl` (desktop) vs future `WgpuSurface`.
-3. **Inventory LuaJIT FFI surface**
-   - Catalog generated modules under `engine/lib/phx/script/ffi_gen/` and
-     script call sites (`ffi.cast`, `ffi.C`, `require('jit')`, `lfs_ffi`).
-   - Define the subset needed for the fly slice (Engine, Window, Input,
-     Renderer/Draw/Shader/Tex/Mesh, Physics, math helpers).
-4. **Optional beauty shortcut for web**
-   - Add a path to load a **prebaked env cubemap** so nebula GPU generation
-     (`Legacy.Systems.Gen.Nebula`) is not required on day one of web.
+2. **Abstract surface creation**
+   - `GraphicsBackend`: `GlutinGl` (desktop) vs future `WgpuSurface`.
+3. **Inventory LuaJIT FFI for the fidelity slice**
+   - Catalog `engine/lib/phx/script/ffi_gen/` and call sites.
+   - API list must cover everything the fidelity bar needs (Renderer/Draw/
+     Shader/Tex/Mesh/cubemaps, Physics, Window/Input, Engine, gen helpers
+     used by nebula/starfield) — not a toy subset that cannot express the
+     look.
+4. **Capture desktop goldens**
+   - Fixed-seed stills + short clips from `SolarSystemPlayable` (GL) as the
+     A–B baseline for later wgpu and web.
 
-**Exit:** Desktop still OpenGL; render + window seams ready; FFI inventory
-and fly-slice API list written (can live beside this doc as
-`doc/web/ffi-inventory.md` when implementation starts).
+**Exit:** Seams ready; FFI inventory complete; golden reference set checked in
+or documented under `doc/web/`.
 
 ---
 
-### Phase 1 — wgpu backend on desktop
+### Phase 1 — wgpu backend on desktop (parity first)
 
-Implement `CommandExecutorWgpu` selected by a new cargo feature
-(`backend-wgpu`), still running natively.
+`CommandExecutorWgpu` behind `backend-wgpu`, native first.
 
-1. Map `RenderCommand` variants to wgpu
-   (`engine/lib/phx/src/render/thread/command_executor_gl.rs` → sibling
-   `command_executor_wgpu.rs`).
-2. Port shaders under `res/shader/` from GLSL 330 → WGSL (or Naga-ingested
-   GLSL ES with a validated subset). Priority order for the fly slice:
-   - Geometry / materials: `metal`, `planet`, `atmosphere`, `star`, `moon`
-   - Background: `skybox`, `starbg`
-   - Lighting + post: deferred light passes used by `RenderCoreSystem`, then
-     bloom + tonemap (+ colorgrade if cheap)
-3. Prove parity with `cargo run --features backend-wgpu -- SolarSystemPlayable`
-   (or a trimmed web-oriented state — see Phase 3).
+1. Map the full `RenderCommand` surface used by the flight scene (including
+   cubemap / FBO / filter passes the post stack needs).
+2. Port shaders for **full fidelity**, not a demo subset:
+   - Materials: `metal` / `uv_metal`, `planet`, `atmosphere`, `star`, `moon`,
+     `planetring`
+   - Background / gen: `skybox`, `starbg`, nebula gen shaders under
+     `res/shader/fragment/gen/`
+   - Effects: thruster if used, `filter/lensflare`
+   - Post: `bloompre` / `bloomcomposite`, `tonemap`, `colorgrade`, vignette,
+     FXAA, sharpen, aberration, dither — matching `PostFxConfig`
+3. Nebula: prefer **porting live gen** to wgpu so seeds stay dynamic. A bake
+   is acceptable only if A–B against desktop gen for the golden seed passes
+   the fidelity bar (same look, not a stock HDRI).
+4. Prove: `cargo run --features backend-wgpu -- SolarSystemPlayable` (or
+   `WebFlight`) matches GL goldens.
 
-**Exit:** Same fly scene on desktop through wgpu; GL remains default until
-wgpu is stable.
+**Exit:** Desktop wgpu flight is visually on par with desktop GL; GL remains
+default until stable.
 
 ---
 
 ### Phase 2 — WASM-safe Lua + binding rewrite
 
-Hardest phase; schedule it in parallel with late Phase 1 once the fly-slice
-API list is frozen.
+Hardest phase; overlap with late Phase 1 once the API list is frozen.
 
-1. **mlua feature switch**
-   - Desktop can keep LuaJIT temporarily behind `cfg`.
-   - Web (and ideally a desktop `lua54` CI job) uses `mlua` with `lua54` /
-     `vendored`, **not** `luajit52`.
-2. **Replace LuaJIT FFI with mlua userdata / thin wrappers**
-   - New binding layer (evolve or supersede `luajit-ffi-gen`) that emits
-     mlua `UserData` types instead of `extern "C"` + `ffi.cdef`.
-   - Port only the fly-slice API first; stub or omit the rest.
-3. **Script migration for the slice**
-   - Remove `require('ffi')` / `jit` / `lfs_ffi` from the boot path used by
-     the web app.
-   - Keep game logic in Lua where it already is (`PlayerController`,
-     `ShipFlightSystem`, `RenderCoreSystem`, celestial managers).
+1. **mlua:** web (+ desktop CI job) on `lua54` / `vendored`; no `luajit52` on
+   wasm.
+2. **Bindings:** evolve/supersede `luajit-ffi-gen` → mlua `UserData` for the
+   fidelity-slice API (complete enough for nebula, deferred, post, physics,
+   input — not a minimal draw-triangle set).
+3. **Scripts:** strip `ffi` / `jit` / `lfs_ffi` from the web boot path; keep
+   `PlayerController`, `ShipFlightSystem`, `RenderCoreSystem`,
+   `LensFlareSystem`, celestial managers as the source of truth.
 
-**Exit:** `SolarSystemPlayable` (or trimmed twin) runs on desktop with
-`lua54` + new bindings (GL or wgpu).
+**Exit:** Reference flight runs on desktop with `lua54` + new bindings on GL
+or wgpu at full fidelity.
 
 ---
 
-### Phase 3 — Fly-slice app state
+### Phase 3 — Web flight app state (systems trimmed, look intact)
 
-Add a dedicated, web-friendly state rather than dragging the full test app.
+`script/States/App/Tests/WebFlight.lua` (name flexible), forked from
+`SolarSystemPlayable`:
 
-Suggested: `script/States/App/Tests/WebFlight.lua` (name flexible), forked
-from `SolarSystemPlayable` with:
-
-| Keep | Drop |
-|------|------|
+| Keep (required) | Drop (systems/chrome) |
+|-----------------|------------------------|
 | Physics world | Stations / `StationGenerator` |
-| Skybox + starfield (+ prebaked or generated nebula) | `SystemMap` / `SystemMap3D` |
+| Skybox + starfield + nebula (live or fidelity-grade bake) | `SystemMap` / `SystemMap3D` |
 | `UniverseManager` + `SolarSystemVisualizer` | `AutoPilotSystem`, `GravityWellSystem` |
-| Ship + `PlayerController` + flight | `AsteroidFieldSystem` (optional later) |
-| `CelestialLightingSystem` + `RenderCoreSystem` post | `GameplayHUDSystem`, `WorldLabelRenderSystem` |
-| Chase / Orbit / Free cameras | Lens flare if too costly; add later |
+| Ship + `PlayerController` + flight | Asteroid streaming (optional add if cost allows; not a visual substitute) |
+| `CelestialLightingSystem` + full `RenderCoreSystem` post | `GameplayHUDSystem`, `WorldLabelRenderSystem` |
+| All flight cameras + `LensFlareSystem` | Main menu / economy / NPC paths |
 
-Fixed seed (e.g. `12345`) for reproducible screenshots and eval.
+Fixed seed for goldens; other seeds should still look like LTR when nebula
+gen is live.
 
-**Exit:** `cargo run -- WebFlight` is the golden desktop path; fewer moving
-parts than `SolarSystemPlayable`.
+**Exit:** `cargo run -- WebFlight` is the golden path — same beauty, less
+chrome.
 
 ---
 
 ### Phase 4 — Browser host + assets
 
-1. **Crate / packaging**
-   - New binary crate e.g. `engine/bin/ltr-web` (or `ltr` with
-     `cfg(target_arch = "wasm32")`) using `wasm-bindgen` + `web-sys`.
-   - Drop cdylib/`Engine_Entry` dlopen model on wasm; export a start hook
-     from Rust.
-2. **Main loop**
-   - winit web backend + `immediate` renderer.
-   - Disable / cfg-out: render OS thread, `notify` shader watcher, `tiny_http`
-     stats server, `directories`, raw `libc` signals, worker OS threads
-     (Lua workers → stub or single-threaded).
-3. **VFS + asset pack**
-   - Pack required trees: `res/shader` (WGSL), `res/tex2d` (metal/surface/
-     lensdirt as needed), `res/mesh` primitives, `script/**` used by
-     `WebFlight`, engine Lua under `engine/lib/phx/script/`.
-   - Replace `system/resource.rs` filesystem scan with pack lookup;
-     Lua `dofile` / `require` read from VFS.
-4. **Input**
-   - Keyboard + mouse via winit web; pointer lock for FPS camera.
-   - Stub gamepad (`gilrs`) and clipboard (`arboard`) on wasm.
-5. **Audio (minimal)**
-   - Mute or stub for v1; later kira/WebAudio from memory buffers.
-6. **Shell page**
-   - Minimal `index.html` + loader; WebGPU required message if unavailable.
+1. **Packaging:** `engine/bin/ltr-web` (or wasm cfg on `ltr`) with
+   `wasm-bindgen` / `web-sys`; no cdylib dlopen model.
+2. **Loop:** winit web + `immediate` renderer; cfg-out OS render thread,
+   `notify`, `tiny_http`, `directories`, libc signals, OS worker pools.
+3. **VFS:** pack shaders (WGSL), textures (metal/surface/lensdirt/etc.),
+   meshes, all scripts/assets the fidelity path touches — including nebula
+   gen resources.
+4. **Input:** keyboard/mouse + pointer lock; stub gilrs/arboard.
+5. **Audio:** stub OK for first browser bring-up; do not block the visual
+   bar. WebAudio thrusters/ambience as immediate follow-up.
+6. **Shell:** `index.html` + loader; clear WebGPU-required messaging.
 
-**Exit:** `wasm-pack` / `trunk` (or equivalent) serves a page that boots
-`WebFlight` and flies.
+**Exit:** Served page boots `WebFlight` and passes the fidelity bar vs
+desktop goldens.
 
 ---
 
 ### Phase 5 — Performance, polish, CI
 
-1. Cap resolution / quality presets for integrated GPUs.
-2. Profile wasm: Rapier step, deferred passes, bloom; reduce work before
-   adding features.
-3. CI job: `wasm32` build + optional headless WebGPU smoke if infrastructure
-   allows; always typecheck/build the wasm target on PR.
-4. Document run instructions in this file’s appendix (filled in at
-   implementation time).
-5. Only then consider stretch: audio, gamepad, asteroid belts, lens flare,
-   nebula live-gen, HUD.
+1. Default = full look; add scalable presets (resolution, bloom radius) that
+   **do not** remove materials/post/flare/nebula character.
+2. Profile wasm (Rapier, deferred, bloom); optimize before adding systems.
+3. CI: `wasm32` build on PRs; desktop wgpu golden smoke where possible.
+4. Document run instructions in an appendix when implementation lands.
+5. After v1: audio, gamepad, asteroids, stations-as-scenery, HUD — still
+   without lowering the established look.
 
 ---
 
@@ -238,12 +262,12 @@ parts than `SolarSystemPlayable`.
 | Assets | `std::fs` | pack + VFS |
 | Audio | kira/cpal | stub → WebAudio |
 | Gamepad / clipboard | gilrs / arboard | stub |
-| FreeType | keep if needed | prefer swash/parley-only path; cfg-out `freetype-sys` |
+| FreeType | keep if needed | prefer swash/parley-only; cfg-out `freetype-sys` if unused by fly path |
 | Physics | rapier3d-f64 | same (verify simd features) |
 
 ---
 
-## Minimal runtime dependency graph (v1)
+## Runtime dependency graph (v1)
 
 ```
 boot (wasm start)
@@ -251,10 +275,12 @@ boot (wasm start)
   → load VFS scripts
   → States.App.Tests.WebFlight
        → Physics.Create
-       → skybox (+ prebaked env or nebula gen)
+       → skybox + nebula + starfield
        → UniverseManager + SolarSystemVisualizer
        → ShipGenerator + PlayerController + ShipFlightSystem
-       → CelestialLightingSystem + RenderCoreSystem (wgpu)
+       → CelestialLightingSystem
+       → RenderCoreSystem (full post) + LensFlareSystem
+       → wgpu CommandExecutor
 ```
 
 ---
@@ -263,26 +289,24 @@ boot (wasm start)
 
 | Risk | Mitigation |
 |------|------------|
-| LuaJIT FFI rewrite is huge | Bind only the fly-slice API; leave unused FFI modules desktop-only |
-| Shader port cost / visual drift | Port post stack incrementally; freeze screenshots from desktop wgpu as goldens |
-| Nebula generation expensive or GL-tied | Prebake cubemap for web v1 |
-| Browser thread limits | `immediate` renderer; no OS worker pool on wasm |
-| Wasm binary size | Compress asset pack separately; `opt-level = s` / LTO for wasm profile |
-| WebGPU availability | Clear unsupported message; WebGL2 fallback is **not** in v1 scope |
+| LuaJIT FFI rewrite is huge | Bind the **fidelity** API surface; omit unused gameplay modules — do not shrink graphics API |
+| Visual drift on shader port | Desktop GL goldens → desktop wgpu parity gate → web gate; no “good enough” merge |
+| Nebula gen hard on wgpu/wasm | Port gen shaders; bake only if seed A–B passes fidelity bar |
+| Browser cost of full post | Resolution/bloom presets; keep all passes available at default |
+| Thread limits | `immediate` renderer; no OS worker pool on wasm |
+| Wasm size | Compressed asset pack; LTO / size opts — not by deleting textures or shaders |
+| WebGPU availability | Clear unsupported UX; WebGL2 fallback **out of v1** (would threaten fidelity) |
 
 ---
 
-## Suggested implementation order (summary)
+## Suggested implementation order
 
-1. Phase 0 seams + FFI inventory  
-2. Phase 3 `WebFlight` state on desktop GL (proves slice)  
-3. Phase 1 wgpu desktop parity for `WebFlight`  
-4. Phase 2 Lua 5.4 + mlua bindings for that slice  
-5. Phase 4 wasm packaging + VFS + browser loop  
-6. Phase 5 perf / CI / polish  
-
-Phases 1 and 2 can overlap after the API inventory is frozen; Phase 3 should
-land early so both backends chase one small app.
+1. Phase 0 seams + FFI inventory + **desktop goldens**  
+2. Phase 3 `WebFlight` on desktop GL (same look, less chrome)  
+3. Phase 1 wgpu desktop **parity** with those goldens  
+4. Phase 2 Lua 5.4 + mlua bindings for the fidelity API  
+5. Phase 4 wasm + VFS + browser (gate on same goldens)  
+6. Phase 5 perf presets / CI / audio follow-up  
 
 ---
 
@@ -292,7 +316,8 @@ land early so both backends chase one small app.
 - Economy, NPCs, jobs, weapons, docking  
 - WebGL2 fallback  
 - Keeping LuaJIT in the browser  
-- Feature parity with threaded renderer or live shader hot-reload on web  
+- Threaded renderer / shader hot-reload on web  
+- A separate low-fi “web demo” renderer or scene  
 
 ---
 
@@ -307,5 +332,7 @@ land early so both backends chase one small app.
 | FFI generator | `engine/lib/luajit-ffi-gen/` |
 | Fly reference state | `script/States/App/Tests/SolarSystemPlayable.lua` |
 | Flight controls | `script/Modules/Constructs/Systems/PlayerController.lua`, `ShipFlightSystem.lua` |
-| Space visuals | `script/Modules/Rendering/Systems/RenderCoreSystem.lua`, `res/shader/` |
+| Space visuals | `script/Modules/Rendering/Systems/RenderCoreSystem.lua`, `LensFlareSystem.lua` |
+| Post stack config | `script/Config/Render/PostFxConfig.lua` |
+| Shaders | `res/shader/` |
 | Strategic note | `ai/ideas.md` (OpenGL → wgpu) |
